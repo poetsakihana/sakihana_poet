@@ -1,0 +1,7 @@
+Tesseract.js 6.0.1: Apache License 2.0
+https://github.com/naptha/tesseract.js
+Tesseract.js-core 6.0.0: Apache License 2.0
+https://github.com/naptha/tesseract.js-core
+Japanese traineddata (jpn, jpn_vert): tessdata_fast, Apache License 2.0
+https://github.com/tesseract-ocr/tessdata_fast
+See bundled LICENSE files. Universal non-SIMD LSTM core is used for device compatibility and hosting capacity.
