@@ -1,10 +1,10 @@
 name: Publish poetry website
 on:
   push:
-    paths: ['.github/workflows/publish-poetry.yml']
+    paths: ['.github/workflows/publish-poetry.yml', 'shishu-d/**']
   workflow_dispatch:
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 concurrency:
@@ -17,6 +17,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
       - name: Prepare complete public poetry website
         shell: python
@@ -67,6 +68,46 @@ jobs:
               print('Saved',len(seen),'files')
           (root/'.nojekyll').touch()
           (root/'google64aa07b94c8f7e5c.html').write_text('google-site-verification: google64aa07b94c8f7e5c.html')
+      - name: Save and publish Sakihana collection D
+        shell: python
+        run: |
+          import urllib.request, urllib.parse, pathlib, json, concurrent.futures, time, shutil, subprocess
+          origin='https://sakihana-poem-gallery.sakihana0901.chatgpt.site'
+          dest=pathlib.Path('shishu-d'); dest.mkdir(exist_ok=True)
+          def download(path):
+            target=dest/path
+            for attempt in range(4):
+              try:
+                url=origin+'/'+urllib.parse.quote(path,safe='/')
+                with urllib.request.urlopen(url,timeout=60) as r: raw=r.read()
+                if path.endswith('.svg') and not raw.lstrip().startswith(b'<svg'):
+                  raise ValueError('Unexpected image response: '+path)
+                target.parent.mkdir(parents=True,exist_ok=True)
+                target.write_bytes(raw)
+                return
+              except Exception:
+                if attempt==3: raise
+                time.sleep(2**attempt)
+          download('poems.json')
+          poems=json.loads((dest/'poems.json').read_text())
+          assert len(poems)==2183 and len({p['id'] for p in poems})==2183
+          assets=['index.html','app.js','style.css','favicon.svg','assets/sakihana-character.png',
+                  'vendor/tesseract.min.js','vendor/worker.min.js',
+                  'vendor/tesseract-core-lstm.wasm.js','vendor/tesseract-core-lstm.wasm',
+                  'vendor/jpn.traineddata.gz']
+          assets += [p['image'] for p in poems]
+          assert all(not p.startswith('/') and '..' not in p.split('/') for p in assets)
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            for _ in pool.map(download,assets): pass
+          (dest/'README.md').write_text('# 公式恋愛詩人 咲華 — 詩集D\n\n画像閲覧・日本語OCR・音声読み上げに対応した静的サイト。2,183篇。\n詩の画像は提供文字データの再組版です。元の投稿画像ではありません。\n\n公開URL: https://poetsakihana.github.io/sakihana_poet/shishu-d/\n\nOCR: Tesseract.js 6.0.1 / Core 6.0.0 / Japanese language data, Apache-2.0.\n',encoding='utf-8')
+          subprocess.run(['git','config','user.name','github-actions[bot]'],check=True)
+          subprocess.run(['git','config','user.email','41898282+github-actions[bot]@users.noreply.github.com'],check=True)
+          subprocess.run(['git','add','shishu-d'],check=True)
+          if subprocess.run(['git','diff','--cached','--quiet']).returncode:
+            subprocess.run(['git','commit','-m','Publish character gallery and all 2183 collection D poems'],check=True)
+            subprocess.run(['git','push','origin','HEAD:main'],check=True)
+          shutil.copytree(dest,pathlib.Path('public/shishu-d'),dirs_exist_ok=True)
+          print('Verified and published collection D:',len(poems),'poems;',len(assets)+1,'assets')
       - uses: actions/upload-pages-artifact@v3
         with:
           path: public
