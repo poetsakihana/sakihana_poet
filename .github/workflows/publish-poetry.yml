@@ -1,7 +1,8 @@
 name: Publish poetry website
 on:
   push:
-    paths: ['.github/workflows/publish-poetry.yml', 'shishu-d/**']
+    branches: [main]
+    paths: ['.github/workflows/publish-poetry.yml', 'shishu-d/**', '_site-import/**']
   workflow_dispatch:
 permissions:
   contents: write
@@ -19,95 +20,57 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/configure-pages@v5
-      - name: Prepare complete public poetry website
+      - name: Install complete collection D in repository
         shell: python
         run: |
-          import urllib.request, urllib.parse, pathlib, concurrent.futures, json, re, time
-          from html.parser import HTMLParser
-          origin='https://sakihana-poetry-official.sakihana0901.chatgpt.site'
-          target='https://poetsakihana.github.io/sakihana_poet'
-          root=pathlib.Path('public'); root.mkdir()
-          pending={'index.html','data.json','sitemap.xml','robots.txt','favicon.ico','icon-512.png','apple-touch-icon.png','app.js','reader.js','speech.js','book-reader.js','style.css','all-books.html','all-poems.html','sakihana-ocr-all.txt'}; seen=set()
-          class Links(HTMLParser):
-            def handle_starttag(self,tag,attrs):
-              for k,v in attrs:
-                if k in ('src','href') and v and not v.startswith('#'):
-                  u=urllib.parse.urlsplit(urllib.parse.urljoin(origin+'/'+self.path,v))
-                  if u.netloc==urllib.parse.urlsplit(origin).netloc:
-                    p=urllib.parse.unquote(u.path).lstrip('/'); p=p+'index.html' if p.endswith('/') else p
-                    if p and '..' not in p.split('/'): self.links.add(p)
-          def get(p):
+          import pathlib, tarfile, io, urllib.request, concurrent.futures, subprocess, shutil, json, time
+          root=pathlib.Path('shishu-d')
+          raw=b''.join(p.read_bytes() for p in sorted(pathlib.Path('_site-import').glob('collection-d.part*')))
+          with tarfile.open(fileobj=io.BytesIO(raw),mode='r:gz') as t:
+            for m in t.getmembers():
+              assert m.name.startswith('shishu-d/') and '..' not in pathlib.PurePosixPath(m.name).parts
+              assert m.isfile()
+            t.extractall('.',filter='data')
+          vendor=root/'vendor';vendor.mkdir(exist_ok=True)
+          urls={
+            'tesseract.min.js':'https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/tesseract.min.js',
+            'worker.min.js':'https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/worker.min.js',
+            'tesseract-core-lstm.wasm.js':'https://cdn.jsdelivr.net/npm/tesseract.js-core@6.0.0/tesseract-core-lstm.wasm.js',
+            'tesseract-core-lstm.wasm':'https://cdn.jsdelivr.net/npm/tesseract.js-core@6.0.0/tesseract-core-lstm.wasm',
+            'jpn.traineddata.gz':'https://cdn.jsdelivr.net/npm/@tesseract.js-data/jpn@1.0.0/4.0.0_best_int/jpn.traineddata.gz',
+            'LICENSE-tesseract.txt':'https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/LICENSE.md',
+            'LICENSE-core.txt':'https://cdn.jsdelivr.net/npm/tesseract.js-core@6.0.0/LICENSE'}
+          def get(item):
+            name,url=item
+            if (vendor/name).is_file(): return
             for attempt in range(4):
               try:
-                with urllib.request.urlopen(origin+'/'+urllib.parse.quote(p,safe='/'),timeout=60) as r: raw=r.read()
-                break
+                with urllib.request.urlopen(url,timeout=60) as r: data=r.read()
+                (vendor/name).write_bytes(data);return
               except Exception:
                 if attempt==3: raise
                 time.sleep(2**attempt)
-            extra=set(); ext=pathlib.Path(p).suffix
-            if ext in ('.html','.js','.css','.json','.xml','.txt'):
-              s=raw.decode('utf-8')
-              if ext=='.html':
-                parser=Links(); parser.path=p; parser.links=extra; parser.feed(s)
-              if p=='data.json':
-                d=json.loads(s)
-                for b in d['books']:
-                  assert re.fullmatch('[a-z0-9-]+',b['id'])
-                  extra.update({'books/'+b['id']+'/'+f for f in ['index.html','cover.jpg','book.epub','ocr.json']})
-                extra.update('poems/'+v['id']+'.html' for v in d['poems'])
-              s=s.replace(origin,target)
-              if ext=='.html': s=re.sub(r'((?:href|src)=\")/(?!/)',r'\1/sakihana_poet/',s)
-              if ext=='.js': s=s.replace("'/","'/sakihana_poet/").replace('"/','"/sakihana_poet/')
-              raw=s.encode('utf-8')
-            dest=root/p; dest.parent.mkdir(parents=True,exist_ok=True); dest.write_bytes(raw)
-            return extra
-          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            while pending:
-              batch=pending-seen; pending=set(); seen.update(batch)
-              for extra in pool.map(get,batch): pending.update(extra-seen)
-              print('Saved',len(seen),'files')
-          (root/'.nojekyll').touch()
-          (root/'google64aa07b94c8f7e5c.html').write_text('google-site-verification: google64aa07b94c8f7e5c.html')
-      - name: Save and publish Sakihana collection D
-        shell: python
-        run: |
-          import urllib.request, urllib.parse, pathlib, json, concurrent.futures, time, shutil, subprocess
-          origin='https://sakihana-poem-gallery.sakihana0901.chatgpt.site'
-          dest=pathlib.Path('shishu-d'); dest.mkdir(exist_ok=True)
-          def download(path):
-            target=dest/path
-            for attempt in range(4):
-              try:
-                url=origin+'/'+urllib.parse.quote(path,safe='/')
-                with urllib.request.urlopen(url,timeout=60) as r: raw=r.read()
-                if path.endswith('.svg') and not raw.lstrip().startswith(b'<svg'):
-                  raise ValueError('Unexpected image response: '+path)
-                target.parent.mkdir(parents=True,exist_ok=True)
-                target.write_bytes(raw)
-                return
-              except Exception:
-                if attempt==3: raise
-                time.sleep(2**attempt)
-          download('poems.json')
-          poems=json.loads((dest/'poems.json').read_text())
+          with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+            list(pool.map(get,urls.items()))
+          poems=json.loads((root/'poems.json').read_text())
           assert len(poems)==2183 and len({p['id'] for p in poems})==2183
-          assets=['index.html','app.js','style.css','favicon.svg','assets/sakihana-character.png',
-                  'vendor/tesseract.min.js','vendor/worker.min.js',
-                  'vendor/tesseract-core-lstm.wasm.js','vendor/tesseract-core-lstm.wasm',
-                  'vendor/jpn.traineddata.gz']
-          assets += [p['image'] for p in poems]
-          assert all(not p.startswith('/') and '..' not in p.split('/') for p in assets)
-          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
-            for _ in pool.map(download,assets): pass
-          (dest/'README.md').write_text('# 公式恋愛詩人 咲華 — 詩集D\n\n画像閲覧・日本語OCR・音声読み上げに対応した静的サイト。2,183篇。\n詩の画像は提供文字データの再組版です。元の投稿画像ではありません。\n\n公開URL: https://poetsakihana.github.io/sakihana_poet/shishu-d/\n\nOCR: Tesseract.js 6.0.1 / Core 6.0.0 / Japanese language data, Apache-2.0.\n',encoding='utf-8')
+          assert all((root/p['image']).is_file() for p in poems)
           subprocess.run(['git','config','user.name','github-actions[bot]'],check=True)
           subprocess.run(['git','config','user.email','41898282+github-actions[bot]@users.noreply.github.com'],check=True)
           subprocess.run(['git','add','shishu-d'],check=True)
           if subprocess.run(['git','diff','--cached','--quiet']).returncode:
-            subprocess.run(['git','commit','-m','Publish character gallery and all 2183 collection D poems'],check=True)
+            subprocess.run(['git','commit','-m','Store complete collection D website with 2183 poem images and local OCR'],check=True)
             subprocess.run(['git','push','origin','HEAD:main'],check=True)
-          shutil.copytree(dest,pathlib.Path('public/shishu-d'),dirs_exist_ok=True)
-          print('Verified and published collection D:',len(poems),'poems;',len(assets)+1,'assets')
+          out=pathlib.Path('public');out.mkdir()
+          tracked=subprocess.check_output(['git','ls-files','-z']).decode().split('\0')
+          for name in filter(None,tracked):
+            if name.split('/')[0] in ('.github','_site-import','.openai'): continue
+            src=pathlib.Path(name)
+            if not src.is_file():continue
+            target=out/name;target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(src,target)
+          (out/'.nojekyll').touch()
+          assert (out/'index.html').is_file() and (out/'shishu-d/index.html').is_file()
+          print('Verified 2183 poems and complete static website.')
       - uses: actions/upload-pages-artifact@v3
         with:
           path: public
