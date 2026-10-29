@@ -1,0 +1,74 @@
+name: Publish poetry website
+on:
+  push:
+    paths: ['.github/workflows/publish-poetry.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - name: Prepare complete public poetry website
+        shell: python
+        run: |
+          import urllib.request, urllib.parse, pathlib, concurrent.futures, json, re, time
+          from html.parser import HTMLParser
+          origin='https://sakihana-poetry-official.sakihana0901.chatgpt.site'
+          target='https://poetsakihana.github.io/sakihana_poet'
+          root=pathlib.Path('public'); root.mkdir()
+          pending={'index.html','data.json','sitemap.xml','robots.txt','favicon.ico','icon-512.png','apple-touch-icon.png','app.js','reader.js','speech.js','book-reader.js','style.css','all-books.html','all-poems.html','sakihana-ocr-all.txt'}; seen=set()
+          class Links(HTMLParser):
+            def handle_starttag(self,tag,attrs):
+              for k,v in attrs:
+                if k in ('src','href') and v and not v.startswith('#'):
+                  u=urllib.parse.urlsplit(urllib.parse.urljoin(origin+'/'+self.path,v))
+                  if u.netloc==urllib.parse.urlsplit(origin).netloc:
+                    p=urllib.parse.unquote(u.path).lstrip('/'); p=p+'index.html' if p.endswith('/') else p
+                    if p and '..' not in p.split('/'): self.links.add(p)
+          def get(p):
+            for attempt in range(4):
+              try:
+                with urllib.request.urlopen(origin+'/'+urllib.parse.quote(p,safe='/'),timeout=60) as r: raw=r.read()
+                break
+              except Exception:
+                if attempt==3: raise
+                time.sleep(2**attempt)
+            extra=set(); ext=pathlib.Path(p).suffix
+            if ext in ('.html','.js','.css','.json','.xml','.txt'):
+              s=raw.decode('utf-8')
+              if ext=='.html':
+                parser=Links(); parser.path=p; parser.links=extra; parser.feed(s)
+              if p=='data.json':
+                d=json.loads(s)
+                for b in d['books']:
+                  assert re.fullmatch('[a-z0-9-]+',b['id'])
+                  extra.update({'books/'+b['id']+'/'+f for f in ['index.html','cover.jpg','book.epub','ocr.json']})
+                extra.update('poems/'+v['id']+'.html' for v in d['poems'])
+              s=s.replace(origin,target)
+              if ext=='.html': s=re.sub(r'((?:href|src)=\")/(?!/)',r'\1/sakihana_poet/',s)
+              if ext=='.js': s=s.replace("'/","'/sakihana_poet/").replace('"/','"/sakihana_poet/')
+              raw=s.encode('utf-8')
+            dest=root/p; dest.parent.mkdir(parents=True,exist_ok=True); dest.write_bytes(raw)
+            return extra
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            while pending:
+              batch=pending-seen; pending=set(); seen.update(batch)
+              for extra in pool.map(get,batch): pending.update(extra-seen)
+              print('Saved',len(seen),'files')
+          (root/'.nojekyll').touch()
+          (root/'google64aa07b94c8f7e5c.html').write_text('google-site-verification: google64aa07b94c8f7e5c.html')
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+      - id: deployment
+        uses: actions/deploy-pages@v4
